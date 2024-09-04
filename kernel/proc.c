@@ -120,6 +120,23 @@ found:
     release(&p->lock);
     return 0;
   }
+    // Init the kernal page table
+  p->kernelpt = proc_kpt_init();
+  if(p->kernelpt == 0){
+    freeproc(p);
+    release(&p->lock);
+    return 0;
+  }
+    // Allocate a page for the process's kernel stack.
+  // Map it high in memory, followed by an invalid
+  // guard page.
+  char *pa = kalloc();
+  if(pa == 0)
+    panic("kalloc");
+  uint64 va = KSTACK((int) (p - proc));
+  uvmmap(p->kernelpt, va, (uint64)pa, PGSIZE, PTE_R | PTE_W);
+  p->kstack = va;
+
 
   // Set up new context to start executing at forkret,
   // which returns to user space.
@@ -150,6 +167,12 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+  // free the kernel stack in the RAM
+  uvmunmap(p->kernelpt, p->kstack, 1, 1);
+  p->kstack = 0;
+  if(p->kernelpt){
+    proc_freekpagetable(p->kernelpt);
+  }
 }
 
 // Create a user page table for a given process,
@@ -473,8 +496,14 @@ scheduler(void)
         // before jumping back to us.
         p->state = RUNNING;
         c->proc = p;
-        swtch(&c->context, &p->context);
+        // Store the kernal page table into the SATP
 
+        proc_inithart(p->kernelpt);
+
+        // printf("1");
+        swtch(&c->context, &p->context);
+        // Come back to the global kernel page table
+        kvminithart();
         // Process is done running for now.
         // It should have changed its p->state before coming back.
         c->proc = 0;
@@ -696,4 +725,52 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+/**
+ * @param pagetable 所要打印的页表
+ * @param level 页表的层级
+ */
+void
+_vmprint(pagetable_t pagetable, int level){
+  // there are 2^9 = 512 PTEs in a page table.
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    // PTE_V is a flag for whether the page table is valid
+    if(pte & PTE_V){
+      for (int j = 0; j < level; j++){
+        if (j) printf(" ");
+        printf("..");
+      }
+      uint64 child = PTE2PA(pte);
+      printf("%d: pte %p pa %p\n", i, pte, child);
+      if((pte & (PTE_R|PTE_W|PTE_X)) == 0){
+        // this PTE points to a lower-level page table.
+        _vmprint((pagetable_t)child, level + 1);
+      }
+    }
+  }
+}
+
+/**
+ * @brief vmprint 打印页表
+ * @param pagetable 所要打印的页表
+ */
+void
+vmprint(pagetable_t pagetable){
+  printf("page table %p\n", pagetable);
+  _vmprint(pagetable, 1);
+}
+void proc_freekpagetable(pagetable_t kpagetable) {
+    for(int i = 0; i < 512; i++){
+        pte_t pte = kpagetable[i];
+        if((pte & PTE_V)){
+            kpagetable[i] = 0;    // 对于有效的PTE都清零
+            // 递归清除
+            if ((pte & (PTE_R|PTE_W|PTE_X)) == 0) {
+                uint64 child = PTE2PA(pte);
+                proc_freekpagetable((pagetable_t)child);
+            }
+        }
+    }
+    kfree((void*)kpagetable);
 }

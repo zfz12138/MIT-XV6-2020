@@ -31,6 +31,7 @@ main()
     iinit();         // inode cache
     fileinit();      // file table
     virtio_disk_init(); // emulated hard disk
+
 #ifdef LAB_NET
     pci_init();
     sockinit();
@@ -48,5 +49,7 @@ main()
     plicinithart();   // ask PLIC for device interrupts
   }
 
-  scheduler();        
+  scheduler();     
+  printf("1");
+   
 }
